@@ -138,6 +138,10 @@ const String kOptionShowRemoteCursor = "show_remote_cursor";
 const String kOptionFollowRemoteCursor = "follow_remote_cursor";
 const String kOptionFollowRemoteWindow = "follow_remote_window";
 const String kOptionZoomCursor = "zoom-cursor";
+const String kOptionMacosFullscreenKeyboardCapture =
+    "macos-fullscreen-keyboard-capture";
+const String kOptionMacosFullscreenKeyboardCaptureWhitelist =
+    "macos-fullscreen-keyboard-capture-whitelist";
 const String kOptionShowQualityMonitor = "show_quality_monitor";
 const String kOptionDisableAudio = "disable_audio";
 const String kOptionEnableFileCopyPaste = "enable-file-copy-paste";

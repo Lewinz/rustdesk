@@ -780,6 +780,20 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("RustDesk could not load a GStreamer component needed for screen capture ({})", "RustDesk 无法加载屏幕捕获所需的 GStreamer 组件 ({})"),
         ("Relay fallback delay in seconds", "回落到中继前的等待时间（秒）"),
         ("relay-fallback-delay-tip", "已经建立的中继连接会等待直连的 WebRTC 多久，超过这个时间就改用中继。调大可以让较慢的直连有更多机会胜出；调小则在无法直连的网络上更快回落到中继。留空表示使用默认值 2.5 秒。"),
-        ("To start a voice call, enable \"Audio capture\" on the \"Screen share\" page.", "")
+        ("To start a voice call, enable \"Audio capture\" on the \"Screen share\" page.", ""),
+        ("Control", "操控"),
+        ("Fullscreen Keyboard Capture", "全屏键盘抓取"),
+        ("Capture all keys when fullscreen", "全屏时拦截所有按键"),
+        ("System shortcuts (Cmd+Space, Mission Control, ...) go to the remote host instead of this Mac.", "系统快捷键（Cmd+Space、Mission Control 等）将发送到被控端，而不是本机。"),
+        ("Pass-through shortcuts", "放行快捷键"),
+        ("(none)", "（无）"),
+        ("These combos stay on this Mac while fullscreen keyboard capture is active.\\nFormat: cmd+tab, ctrl+alt+up, f5, or a numeric keycode.", "全屏键盘抓取生效期间，这些组合键保留在本机。
+格式：cmd+tab、ctrl+alt+up、f5 或数字键码。"),
+        ("Recording... press Esc to cancel", "正在录制… 按 Esc 取消"),
+        ("Add shortcut", "添加快捷键"),
+        ("Enable fullscreen keyboard capture", "开启全屏拦截键盘事件"),
+        ("Shortcut {}", "快捷键 {}"),
+        ("Start recording", "开始录制"),
+        ("Not set", "未设置"),
     ].iter().cloned().collect();
 }

@@ -637,6 +637,30 @@ pub fn session_enter_or_leave(_session_id: SessionID, _enter: bool) -> SyncRetur
     SyncReturn(())
 }
 
+pub fn session_set_macos_keyboard_capture(session_id: SessionID, active: bool) -> SyncReturn<()> {
+    #[cfg(target_os = "macos")]
+    crate::platform::macos_keyboard_capture::set_active(session_id, active);
+    SyncReturn(())
+}
+
+pub fn macos_set_keyboard_capture_whitelist(whitelist: Vec<String>) -> SyncReturn<()> {
+    #[cfg(target_os = "macos")]
+    crate::platform::macos_keyboard_capture::set_whitelist(&whitelist);
+    SyncReturn(())
+}
+
+pub fn macos_start_keyboard_capture_recording(channel: String) -> SyncReturn<()> {
+    #[cfg(target_os = "macos")]
+    crate::platform::macos_keyboard_capture::start_recording(channel);
+    SyncReturn(())
+}
+
+pub fn macos_stop_keyboard_capture_recording() -> SyncReturn<()> {
+    #[cfg(target_os = "macos")]
+    crate::platform::macos_keyboard_capture::stop_recording();
+    SyncReturn(())
+}
+
 pub fn session_input_key(
     session_id: SessionID,
     name: String,

@@ -451,6 +451,25 @@ class RustdeskImpl {
     js.context.callMethod('setByName', ['enter_or_leave', enter]);
   }
 
+  void sessionSetMacosKeyboardCapture(
+      {required UuidValue sessionId, required bool active, dynamic hint}) {
+    // macOS-only feature; no-op on web.
+  }
+
+  void macosSetKeyboardCaptureWhitelist(
+      {required List<String> whitelist, dynamic hint}) {
+    // macOS-only feature; no-op on web.
+  }
+
+  void macosStartKeyboardCaptureRecording(
+      {required String channel, dynamic hint}) {
+    // macOS-only feature; no-op on web.
+  }
+
+  void macosStopKeyboardCaptureRecording({dynamic hint}) {
+    // macOS-only feature; no-op on web.
+  }
+
   Future<void> sessionInputKey(
       {required UuidValue sessionId,
       required String name,

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
@@ -103,6 +104,8 @@ class _RemotePageState extends State<RemotePage>
   bool _macOSLocalFocusLost = false;
   bool _macOSInputActive = false;
   bool _macOSInputSuppressed = false;
+  bool _macOSKeyboardCaptureActive = false;
+  bool _macOSKeyboardCaptureEnabled = false;
   final _macOSFullScreenFocusRecovery = MacOSFullScreenFocusRecovery();
   bool _macOSExplicitFocusRequestPending = false;
   StreamSubscription<DesktopTabState>? _tabStateSubscription;
@@ -151,6 +154,10 @@ class _RemotePageState extends State<RemotePage>
     if (isMacOS) {
       // SchedulerBinding.instance.lifecycleState is null in the first connection in a new window.
       _macOSLifecycleState = SchedulerBinding.instance.lifecycleState;
+      _macOSKeyboardCaptureEnabled = bind.mainGetLocalOption(
+              key: kOptionMacosFullscreenKeyboardCapture) !=
+          'N';
+      _syncMacOSKeyboardCaptureWhitelist();
       WidgetsBinding.instance.addObserver(this);
       _tabStateSubscription =
           widget.tabController?.state.listen(_onMacOSTabStateChanged);
@@ -304,6 +311,7 @@ class _RemotePageState extends State<RemotePage>
     _macOSLocalFocusLost = true;
     _ffi.inputModel.enterOrLeave(false);
     _macOSInputActive = false;
+    _syncMacOSKeyboardCapture();
     _rawKeyFocusNode.unfocus();
   }
 
@@ -321,6 +329,7 @@ class _RemotePageState extends State<RemotePage>
       if (_macOSInputActive) {
         _ffi.inputModel.enterOrLeave(false);
         _macOSInputActive = false;
+        _syncMacOSKeyboardCapture();
       }
       if (_isMacOSKeyboardContextActive) {
         _macOSLocalFocusLost = true;
@@ -343,13 +352,14 @@ class _RemotePageState extends State<RemotePage>
     final lifecycleAllowsInput = allowInactiveLifecycle ||
         _macOSLifecycleState == null ||
         _macOSLifecycleState == AppLifecycleState.resumed;
-    // Input stays pointer-gated except for focused fullscreen recovery, which
-    // compensates when macOS omits PointerEnter during a Space switch.
+    // Input stays pointer-gated except for fullscreen windows, where the
+    // native keyboard capture (and the pointer-gated focused fullscreen
+    // recovery) takes over: hovering the floating toolbar must not drop keys.
     final shouldFocus = lifecycleAllowsInput &&
         _isMacOSKeyboardContextActive &&
         !_macOSInputSuppressed &&
         _blockableOverlayState.middleBlocked.isFalse &&
-        _cursorOverImage.value &&
+        (_cursorOverImage.value || stateGlobal.fullscreen.isTrue) &&
         !_macOSLocalFocusLost;
     final hasFocus = _rawKeyFocusNode.hasPrimaryFocus;
     final shouldActivateInput = shouldFocus && hasFocus;
@@ -368,6 +378,42 @@ class _RemotePageState extends State<RemotePage>
       _rawKeyFocusNode.requestFocus();
     } else {
       _macOSExplicitFocusRequestPending = false;
+    }
+    _syncMacOSKeyboardCapture();
+  }
+
+  /// Push the whitelisted pass-through combos to the native tap. Called once
+  /// per page; the whitelist is a global (non-session) setting.
+  void _syncMacOSKeyboardCaptureWhitelist() {
+    if (!isMacOS) return;
+    final raw = bind.mainGetLocalOption(
+        key: kOptionMacosFullscreenKeyboardCaptureWhitelist);
+    List<String> combos = [];
+    if (raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) {
+          combos = decoded.whereType<String>().toList();
+        }
+      } catch (e) {
+        debugPrint('invalid keyboard capture whitelist: $e');
+      }
+    }
+    bind.macosSetKeyboardCaptureWhitelist(whitelist: combos);
+  }
+
+  /// Keep the native fullscreen keyboard capture in sync with the Flutter
+  /// input state. The tap is only active while input is on AND the window is
+  /// fullscreen; anything else runs the legacy Flutter-only path unchanged.
+  void _syncMacOSKeyboardCapture() {
+    if (!isMacOS) return;
+    final active = _macOSInputActive &&
+        stateGlobal.fullscreen.isTrue &&
+        _macOSKeyboardCaptureEnabled;
+    if (active != _macOSKeyboardCaptureActive) {
+      _macOSKeyboardCaptureActive = active;
+      bind.sessionSetMacosKeyboardCapture(
+          sessionId: sessionId, active: active);
     }
   }
 
@@ -451,6 +497,7 @@ class _RemotePageState extends State<RemotePage>
     } else if (_macOSInputActive) {
       _ffi.inputModel.enterOrLeave(false);
       _macOSInputActive = false;
+      _syncMacOSKeyboardCapture();
     }
 
     final generation = _macOSFullScreenFocusRecovery.pendingGeneration;
@@ -621,6 +668,7 @@ class _RemotePageState extends State<RemotePage>
     super.onWindowEnterFullScreen();
     if (isMacOS) {
       stateGlobal.setFullscreen(true);
+      _syncMacOSKeyboardCapture();
       _queueMacOSKeyboardAfterFullScreen();
     }
   }
@@ -630,6 +678,7 @@ class _RemotePageState extends State<RemotePage>
     super.onWindowLeaveFullScreen();
     if (isMacOS) {
       stateGlobal.setFullscreen(false);
+      _syncMacOSKeyboardCapture();
       _queueMacOSKeyboardAfterFullScreen();
     }
   }

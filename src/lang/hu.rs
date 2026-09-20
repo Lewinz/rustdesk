@@ -780,6 +780,19 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("RustDesk could not load a GStreamer component needed for screen capture ({})", "A RustDesk nem tudta betölteni a képernyőrögzítéshez szükséges GStreamer összetevőt ({})"),
         ("Relay fallback delay in seconds", "Késleltetés a továbbítóra váltás előtt másodpercben"),
         ("relay-fallback-delay-tip", "Mennyi ideig vár a már létrejött továbbító kapcsolat a közvetlen WebRTC kapcsolatra, mielőtt helyette használnák. Növelje, hogy a lassú közvetlen kapcsolatnak több ideje legyen; csökkentse, hogy olyan hálózatokon, ahol közvetlen kapcsolat nem hozható létre, hamarabb váltson továbbítóra. Hagyja üresen az alapértelmezett 2.5 másodperchez."),
-        ("To start a voice call, enable \"Audio capture\" on the \"Screen share\" page.", "")
+        ("To start a voice call, enable \"Audio capture\" on the \"Screen share\" page.", ""),
+        ("Control", ""),
+        ("Fullscreen Keyboard Capture", ""),
+        ("Capture all keys when fullscreen", ""),
+        ("System shortcuts (Cmd+Space, Mission Control, ...) go to the remote host instead of this Mac.", ""),
+        ("Pass-through shortcuts", ""),
+        ("(none)", ""),
+        ("These combos stay on this Mac while fullscreen keyboard capture is active.\\nFormat: cmd+tab, ctrl+alt+up, f5, or a numeric keycode.", ""),
+        ("Recording... press Esc to cancel", ""),
+        ("Add shortcut", ""),
+        ("Enable fullscreen keyboard capture", ""),
+        ("Shortcut {}", ""),
+        ("Start recording", ""),
+        ("Not set", ""),
     ].iter().cloned().collect();
 }

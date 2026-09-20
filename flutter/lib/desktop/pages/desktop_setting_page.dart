@@ -50,6 +50,7 @@ class _TabInfo {
 
 enum SettingsTabKey {
   general,
+  control,
   safety,
   network,
   display,
@@ -63,6 +64,7 @@ class DesktopSettingPage extends StatefulWidget {
   static final List<SettingsTabKey> tabKeys = [
     if (bind.mainGetBuildinOption(key: kOptionHideGeneralSetting) != 'Y')
       SettingsTabKey.general,
+    if (isMacOS) SettingsTabKey.control,
     if (!isWeb &&
         !bind.isOutgoingOnly() &&
         !bind.isDisableSettings() &&
@@ -188,6 +190,10 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
           settingTabs.add(_TabInfo(
               tab, 'General', Icons.settings_outlined, Icons.settings));
           break;
+        case SettingsTabKey.control:
+          settingTabs.add(_TabInfo(tab, 'Control',
+              Icons.keyboard_alt_outlined, Icons.keyboard_alt));
+          break;
         case SettingsTabKey.safety:
           settingTabs.add(_TabInfo(tab, 'Security',
               Icons.enhanced_encryption_outlined, Icons.enhanced_encryption));
@@ -223,6 +229,9 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
       switch (tab) {
         case SettingsTabKey.general:
           children.add(const _General());
+          break;
+        case SettingsTabKey.control:
+          children.add(const _Control());
           break;
         case SettingsTabKey.safety:
           children.add(const _Safety());
@@ -2205,6 +2214,349 @@ class _DisplayState extends State<_Display> {
     final children =
         otherDefaultSettings().map((e) => otherRow(e.$1, e.$2)).toList();
     return _Card(title: 'Other Default Options', children: children);
+  }
+}
+
+class _Control extends StatefulWidget {
+  const _Control({Key? key}) : super(key: key);
+
+  @override
+  State<_Control> createState() => _ControlState();
+}
+
+class _ControlState extends State<_Control> {
+  bool _recording = false;
+  int _recordingIndex = -1;
+  int _editingNameIndex = -1;
+  StreamSubscription<String>? _recordStreamSub;
+  final TextEditingController _nameController = TextEditingController();
+
+  /// Items are (name, combo) pairs; stored as [{"name":..., "combo":...}].
+  List<Map<String, String>> _readShortcuts() {
+    final raw = bind.mainGetLocalOption(
+        key: kOptionMacosFullscreenKeyboardCaptureWhitelist);
+    if (raw.isEmpty) return [];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded.map((e) {
+          if (e is Map) {
+            return {
+              'name': (e['name'] as String?) ?? '',
+              'combo': (e['combo'] as String?) ?? '',
+            };
+          }
+          // legacy plain-string entries
+          final v = e.toString();
+          return {'name': v, 'combo': v};
+        }).toList();
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  Future<void> _saveShortcuts(List<Map<String, String>> items) async {
+    await bind.mainSetLocalOption(
+        key: kOptionMacosFullscreenKeyboardCaptureWhitelist,
+        value: jsonEncode(items));
+    bind.macosSetKeyboardCaptureWhitelist(
+        whitelist: items.map((e) => e['combo'] ?? '').toList());
+    setState(() {});
+  }
+
+  String _nextDefaultName(List<Map<String, String>> items) {
+    final n = items.length + 1;
+    return translate('Shortcut {}').replaceAll('{}', '$n');
+  }
+
+  void _addRow() {
+    final items = _readShortcuts();
+    items.add({'name': _nextDefaultName(items), 'combo': ''});
+    _saveShortcuts(items);
+  }
+
+  void _removeRow(int index) {
+    final items = _readShortcuts()..removeAt(index);
+    _saveShortcuts(items);
+  }
+
+  void _startRecording(int index) {
+    setState(() {
+      _recording = true;
+      _recordingIndex = index;
+    });
+    const channel = 'kb_recorder';
+    _recordStreamSub?.cancel();
+    _recordStreamSub = bind.startGlobalEventStream(appType: channel).listen(
+      (message) {
+        try {
+          final event = jsonDecode(message);
+          if (event is! Map) return;
+          final items = _readShortcuts();
+          if (event['cancel'] == true) {
+            _stopRecording();
+            return;
+          }
+          final combo = event['combo'] as String?;
+          if (combo == null || combo.isEmpty) return;
+          final next = List<Map<String, String>>.from(items);
+          next[_recordingIndex] = {...next[_recordingIndex], 'combo': combo};
+          _saveShortcuts(next);
+          _stopRecording();
+        } catch (e) {
+          debugPrint('kb recorder event error: $e');
+        }
+      },
+    );
+    bind.macosStartKeyboardCaptureRecording(channel: channel);
+  }
+
+  void _stopRecording() {
+    bind.macosStopKeyboardCaptureRecording();
+    _recordStreamSub?.cancel();
+    _recordStreamSub = null;
+    setState(() {
+      _recording = false;
+      _recordingIndex = -1;
+    });
+  }
+
+  /// Convert a key event into a "cmd+shift+t"-style combo, or '' when the
+  /// key is not recordable (modifier-only, unsupported key).
+  String _comboFromKeyEvent(KeyDownEvent e) {
+    final hw = HardwareKeyboard.instance;
+    final mods = <String>[
+      if (hw.isMetaPressed) 'cmd',
+      if (hw.isControlPressed) 'ctrl',
+      if (hw.isAltPressed) 'alt',
+      if (hw.isShiftPressed) 'shift',
+    ];
+    String main;
+    switch (e.logicalKey.keyLabel) {
+      case 'Tab':
+        main = 'tab';
+      case 'Space':
+        main = 'space';
+      case 'Backspace' || 'Delete':
+        main = 'del';
+      case 'Enter' || 'Return':
+        main = 'enter';
+      case 'ArrowUp':
+        main = 'up';
+      case 'ArrowDown':
+        main = 'down';
+      case 'ArrowLeft':
+        main = 'left';
+      case 'ArrowRight':
+        main = 'right';
+      case 'Home':
+        main = 'home';
+      case 'End':
+        main = 'end';
+      case 'PageUp':
+        main = 'pageup';
+      case 'PageDown':
+        main = 'pagedown';
+      default:
+        final label = e.logicalKey.keyLabel;
+        if (label.length == 1 && label != ' ') {
+          main = label.toLowerCase();
+        } else if (label.length >= 2 && label.length <= 3 && label.startsWith('F')) {
+          main = label.toLowerCase();
+        } else {
+          return '';
+        }
+    }
+    return [...mods, main].join('+');
+  }
+
+  /// Display form: "cmd+shift+t" -> "⇧⌘T".
+  String _comboDisplay(String combo) {
+    return combo
+        .split('+')
+        .map((t) => switch (t) {
+              'cmd' => '⌘',
+              'ctrl' => '⌃',
+              'alt' => '⌥',
+              'shift' => '⇧',
+              _ => t.toUpperCase(),
+            })
+        .join('  ');
+  }
+
+  void _startEditName(int index, String current) {
+    _nameController.text = current;
+    setState(() => _editingNameIndex = index);
+  }
+
+  void _commitName(List<Map<String, String>> items) {
+    final index = _editingNameIndex;
+    _editingNameIndex = -1;
+    if (index == null || index < 0 || index >= items.length) {
+      setState(() {});
+      return;
+    }
+    final name = _nameController.text.trim();
+    if (name.isEmpty || name == items[index]['name']) {
+      setState(() {});
+      return;
+    }
+    final next = List<Map<String, String>>.from(items);
+    next[index] = {...next[index], 'name': name};
+    _saveShortcuts(next);
+  }
+
+  @override
+  void dispose() {
+    _recordStreamSub?.cancel();
+    if (_recording) {
+      bind.macosStopKeyboardCaptureRecording();
+    }
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scrollController = ScrollController();
+    return ListView(controller: scrollController, children: [
+      fullscreenCapture(context),
+      passThroughShortcuts(context),
+    ]).marginOnly(bottom: _kListViewBottomMargin);
+  }
+
+  Widget fullscreenCapture(BuildContext context) {
+    final enabled = bind.mainGetLocalOption(
+            key: kOptionMacosFullscreenKeyboardCapture) !=
+        'N';
+    onChanged(bool v) async {
+      await bind.mainSetLocalOption(
+          key: kOptionMacosFullscreenKeyboardCapture,
+          value: v ? 'Y' : 'N');
+      setState(() {});
+    }
+
+    return _Card(title: translate('Fullscreen Keyboard Capture'), children: [
+      GestureDetector(
+        child: Row(children: [
+          Checkbox(value: enabled, onChanged: (_) => onChanged(!enabled))
+              .marginOnly(right: 5),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(translate('Enable fullscreen keyboard capture')),
+                Text(
+                  translate('System shortcuts (Cmd+Space, Mission Control, '
+                      '...) go to the remote host instead of this Mac.'),
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
+            ),
+          )
+        ]).marginOnly(left: _kCheckBoxLeftMargin),
+        onTap: () => onChanged(!enabled),
+      ),
+    ]);
+  }
+
+  Widget passThroughShortcuts(BuildContext context) {
+    final items = _readShortcuts();
+    if (bind.mainGetLocalOption(
+            key: kOptionMacosFullscreenKeyboardCapture) ==
+        'N') {
+      return const SizedBox.shrink();
+    }
+    Widget shortcutButton(Map<String, String> item, int index) {
+      final recording = _recording && _recordingIndex == index;
+      final combo = item['combo'] ?? '';
+      return OutlinedButton(
+        onPressed: recording ? null : () => _startRecording(index),
+        style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4)),
+        child: Text(recording
+            ? translate('Start recording')
+            : (combo.isEmpty
+                ? translate('Not set')
+                : _comboDisplay(combo))),
+      );
+    }
+
+    return _Card(title: translate('Pass-through shortcuts'), children: [
+      Column(children: [
+          Row(children: [
+            Expanded(
+                flex: 2,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: _kCheckBoxLeftMargin, vertical: 4),
+                  child: Text(translate('Name'),
+                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                )),
+            Expanded(
+                flex: 2,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Text(translate('Shortcut'),
+                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                )),
+            SizedBox(
+                width: 56,
+                child: Text(translate('Delete'),
+                    style: const TextStyle(fontWeight: FontWeight.bold))),
+          ]),
+          const Divider(height: 1),
+          for (var i = 0; i < items.length; i++)
+            Row(children: [
+              Expanded(
+                  flex: 2,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: _kCheckBoxLeftMargin, vertical: 4),
+                    child: _editingNameIndex == i
+                        ? TextField(
+                            controller: _nameController,
+                            autofocus: true,
+                            decoration: const InputDecoration(
+                                isDense: true, border: OutlineInputBorder()),
+                            onSubmitted: (_) => _commitName(items),
+                            onTapOutside: (_) => _commitName(items),
+                          )
+                        : InkWell(
+                            onTap: () =>
+                                _startEditName(i, items[i]['name'] ?? ''),
+                            child: Text(items[i]['name'] ?? ''),
+                          ),
+                  )),
+              Expanded(
+                  flex: 2,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: shortcutButton(items[i], i),
+                  )),
+              SizedBox(
+                  width: 56,
+                  child: IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () => _removeRow(i),
+                  )),
+            ]),
+          const Divider(height: 1),
+          Row(children: [
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(
+                    left: _kCheckBoxLeftMargin, top: 4),
+                child: OutlinedButton.icon(
+                  onPressed: _addRow,
+                  icon: const Icon(Icons.add, size: 18),
+                  label: Text(translate('Add')),
+                ),
+              ),
+            ),
+          ]),
+      ]),
+    ]);
   }
 }
 

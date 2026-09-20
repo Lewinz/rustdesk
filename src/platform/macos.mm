@@ -909,3 +909,212 @@ extern "C" bool MacSetPrivacyMode(bool on) {
         return TurnOffPrivacyModeInternal();
     }
 }
+
+// ---- Client-side fullscreen keyboard capture ----
+// Forwards every key event into the active remote session while the grab is
+// on, and swallows it locally so macOS system shortcuts (Spotlight, Mission
+// Control, ...) reach the remote host instead of this Mac. Cmd+Tab is passed
+// through: macOS resolves it in WindowServer, so the local app switch wins and
+// the grab is released when this window loses focus.
+static CFMachPortRef g_kbCaptureTap = NULL;
+static CFRunLoopSourceRef g_kbCaptureSource = NULL;
+
+extern "C" void MacOSKeyboardCaptureOnEvent(int64_t keycode, bool down);
+extern "C" bool MacOSKeyboardCaptureIsWhitelisted(uint64_t flags, int64_t keycode);
+
+static CGEventFlags ModifierFlagForKeycode(int64_t keycode) {
+    switch (keycode) {
+        case 55: return kCGEventFlagMaskCommand;   // left Cmd
+        case 56: case 60: return kCGEventFlagMaskShift;
+        case 57: return kCGEventFlagMaskAlphaShift; // CapsLock
+        case 58: case 61: return kCGEventFlagMaskAlternate;
+        case 59: case 62: return kCGEventFlagMaskControl;
+        case 63: return kCGEventFlagMaskSecondaryFn; // Fn
+        default: return 0;
+    }
+}
+
+static CGEventRef MacOSKeyboardCaptureCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon) {
+    (void)proxy;
+    (void)refcon;
+
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        NSLog(@"MacOSKeyboardCapture: event tap disabled by system, re-enabling");
+        if (g_kbCaptureTap) {
+            CGEventTapEnable(g_kbCaptureTap, true);
+        }
+        return event;
+    }
+
+    if (type == kCGEventKeyDown || type == kCGEventKeyUp) {
+        int64_t keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+        CGEventFlags flags = CGEventGetFlags(event);
+        // Whitelisted combos pass through untouched (local system keeps them).
+        if (MacOSKeyboardCaptureIsWhitelisted(flags, keycode)) {
+            return event;
+        }
+        // Let the system App Switcher win; the peer gets the held-key
+        // releases when the grab stops on window blur.
+        if ((flags & kCGEventFlagMaskCommand) && keycode == 48) { // Tab
+            return event;
+        }
+        MacOSKeyboardCaptureOnEvent(keycode, type == kCGEventKeyDown);
+        return NULL; // swallow, forward handled by Rust side
+    }
+
+    if (type == kCGEventFlagsChanged) {
+        int64_t keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+        CGEventFlags flag = ModifierFlagForKeycode(keycode);
+        if (flag != 0) {
+            bool down = (CGEventGetFlags(event) & flag) != 0;
+            MacOSKeyboardCaptureOnEvent(keycode, down);
+        }
+        // Swallow modifier changes too, so local global shortcuts that listen
+        // at the app layer (e.g. Raycast double-Cmd wake-up) cannot fire while
+        // the grab is active. The peer gets every modifier press/release.
+        return NULL;
+    }
+
+    return event;
+}
+
+static bool SetupKeyboardCaptureOnMainThread() {
+    __block bool success = false;
+    void (^setupBlock)(void) = ^{
+        if (g_kbCaptureTap) {
+            success = true;
+            return;
+        }
+        CGEventMask eventMask = (1 << kCGEventKeyDown) | (1 << kCGEventKeyUp) |
+                                (1 << kCGEventFlagsChanged);
+        g_kbCaptureTap = CGEventTapCreate(kCGHIDEventTap, kCGHeadInsertEventTap,
+                                          kCGEventTapOptionDefault, eventMask,
+                                          MacOSKeyboardCaptureCallback, NULL);
+        if (g_kbCaptureTap) {
+            g_kbCaptureSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, g_kbCaptureTap, 0);
+            CFRunLoopAddSource(CFRunLoopGetMain(), g_kbCaptureSource, kCFRunLoopCommonModes);
+            CGEventTapEnable(g_kbCaptureTap, true);
+            success = true;
+        } else {
+            NSLog(@"MacOSKeyboardCapture: failed to create CGEventTap (accessibility permission?)");
+        }
+    };
+    if ([NSThread isMainThread]) {
+        setupBlock();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), setupBlock);
+    }
+    return success;
+}
+
+static void TeardownKeyboardCaptureOnMainThread() {
+    void (^teardownBlock)(void) = ^{
+        if (g_kbCaptureTap) {
+            CGEventTapEnable(g_kbCaptureTap, false);
+            if (g_kbCaptureSource) {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), g_kbCaptureSource, kCFRunLoopCommonModes);
+                CFRelease(g_kbCaptureSource);
+                g_kbCaptureSource = NULL;
+            }
+            CFRelease(g_kbCaptureTap);
+            g_kbCaptureTap = NULL;
+        }
+    };
+    if ([NSThread isMainThread]) {
+        teardownBlock();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), teardownBlock);
+    }
+}
+
+extern "C" bool MacOSKeyboardCaptureStart() {
+    return SetupKeyboardCaptureOnMainThread();
+}
+
+extern "C" void MacOSKeyboardCaptureStop() {
+    TeardownKeyboardCaptureOnMainThread();
+}
+
+// ---- Shortcut recording capture ----
+// While recording a pass-through shortcut, a second tap swallows every key
+// so system combos (Spotlight, App Switcher, ...) cannot fire locally; the
+// combo itself is delivered to the UI via the Rust event stream.
+static CFMachPortRef g_kbRecordTap = NULL;
+static CFRunLoopSourceRef g_kbRecordSource = NULL;
+
+extern "C" void MacOSKeyboardCaptureRecordEvent(int64_t keycode, bool down, uint64_t flags);
+
+static CGEventRef MacOSKeyboardCaptureRecordCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon) {
+    (void)proxy;
+    (void)refcon;
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        NSLog(@"MacOSKeyboardCaptureRecord: event tap disabled by system, re-enabling");
+        if (g_kbRecordTap) {
+            CGEventTapEnable(g_kbRecordTap, true);
+        }
+        return event;
+    }
+    if (type == kCGEventKeyDown) {
+        int64_t keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+        MacOSKeyboardCaptureRecordEvent(keycode, true, CGEventGetFlags(event));
+    }
+    // Swallow everything while recording so the combo cannot trigger locally.
+    return NULL;
+}
+
+static bool SetupKeyboardRecordOnMainThread() {
+    __block bool success = false;
+    void (^setupBlock)(void) = ^{
+        if (g_kbRecordTap) {
+            success = true;
+            return;
+        }
+        CGEventMask eventMask = (1 << kCGEventKeyDown) | (1 << kCGEventKeyUp) |
+                                (1 << kCGEventFlagsChanged);
+        g_kbRecordTap = CGEventTapCreate(kCGHIDEventTap, kCGHeadInsertEventTap,
+                                         kCGEventTapOptionDefault, eventMask,
+                                         MacOSKeyboardCaptureRecordCallback, NULL);
+        if (g_kbRecordTap) {
+            g_kbRecordSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, g_kbRecordTap, 0);
+            CFRunLoopAddSource(CFRunLoopGetMain(), g_kbRecordSource, kCFRunLoopCommonModes);
+            CGEventTapEnable(g_kbRecordTap, true);
+            success = true;
+        } else {
+            NSLog(@"MacOSKeyboardCaptureRecord: failed to create CGEventTap (accessibility permission?)");
+        }
+    };
+    if ([NSThread isMainThread]) {
+        setupBlock();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), setupBlock);
+    }
+    return success;
+}
+
+static void TeardownKeyboardRecordOnMainThread() {
+    void (^teardownBlock)(void) = ^{
+        if (g_kbRecordTap) {
+            CGEventTapEnable(g_kbRecordTap, false);
+            if (g_kbRecordSource) {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), g_kbRecordSource, kCFRunLoopCommonModes);
+                CFRelease(g_kbRecordSource);
+                g_kbRecordSource = NULL;
+            }
+            CFRelease(g_kbRecordTap);
+            g_kbRecordTap = NULL;
+        }
+    };
+    if ([NSThread isMainThread]) {
+        teardownBlock();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), teardownBlock);
+    }
+}
+
+extern "C" bool MacOSKeyboardCaptureRecordStart() {
+    return SetupKeyboardRecordOnMainThread();
+}
+
+extern "C" void MacOSKeyboardCaptureRecordStop() {
+    TeardownKeyboardRecordOnMainThread();
+}
